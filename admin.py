@@ -1,6 +1,5 @@
 from flask import Flask, request, render_template_string
-from datetime import datetime
-import os
+import requests
 
 app = Flask(__name__)
 
@@ -10,7 +9,7 @@ HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>접속 정보 안내</title>
+    <title>접속 정보 확인</title>
     <style>
         body {
             margin: 0;
@@ -34,76 +33,107 @@ HTML = """
             margin-top: 0;
             color: #93c5fd;
         }
-        p {
-            line-height: 1.7;
-            color: #e5e7eb;
+        .row {
+            margin: 12px 0;
+            font-size: 1.05rem;
+            line-height: 1.6;
+        }
+        .label {
+            color: #cbd5e1;
+            font-weight: bold;
+        }
+        .value {
+            color: #f8fafc;
+            word-break: break-all;
         }
         .notice {
-            margin-top: 20px;
-            padding: 16px;
+            margin-top: 24px;
+            padding: 14px;
             border-radius: 12px;
             background: #334155;
-            color: #f8fafc;
-        }
-        .small {
+            color: #e2e8f0;
             font-size: 0.95rem;
-            color: #cbd5e1;
-            margin-top: 18px;
         }
     </style>
 </head>
 <body>
     <div class="box">
-        <h1>접속 정보 안내</h1>
-        <p>
-            이 페이지에 접속하면 서버 보안 및 서비스 운영을 위해 귀하의 정보가 기록될 수 있습니다.
-        </p>
+        <h1>접속 정보</h1>
+
+        <div class="row"><span class="label">IP 주소:</span> <span class="value">{{ ip }}</span></div>
+        <div class="row"><span class="label">국가:</span> <span class="value">{{ country }}</span></div>
+        <div class="row"><span class="label">지역:</span> <span class="value">{{ region }}</span></div>
+        <div class="row"><span class="label">도시:</span> <span class="value">{{ city }}</span></div>
+        <div class="row"><span class="label">ISP:</span> <span class="value">{{ isp }}</span></div>
+
         <div class="notice">
-            현재 페이지는 안내용 예시 페이지입니다.
+            위치 정보는 IP 기반 추정값이라 실제 위치와 다를 수 있습니다.
         </div>
-        <p class="small">
-            기록되는 정보: IP 주소, User-Agent, 접속 시각
-        </p>
     </div>
 </body>
 </html>
 """
 
-LOG_FILE = "access_log.txt"
-
 
 def get_real_ip() -> str:
+    """
+    Render 같은 프록시 환경에서는 X-Forwarded-For를 우선 사용.
+    여러 IP가 있으면 첫 번째가 원래 클라이언트 IP인 경우가 많음.
+    """
     x_forwarded_for = request.headers.get("X-Forwarded-For", "")
     if x_forwarded_for:
         return x_forwarded_for.split(",")[0].strip()
+
+    x_real_ip = request.headers.get("X-Real-IP", "")
+    if x_real_ip:
+        return x_real_ip.strip()
+
     return request.remote_addr or "UNKNOWN"
 
 
-def save_log(ip: str, user_agent: str) -> None:
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_line = f"[{now}] IP={ip} | User-Agent={user_agent}\n"
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(log_line)
+def get_ip_info(ip: str) -> dict:
+    """
+    무료 IP 위치 조회 API 사용.
+    """
+    default_data = {
+        "country": "알 수 없음",
+        "region": "알 수 없음",
+        "city": "알 수 없음",
+        "isp": "알 수 없음",
+    }
+
+    try:
+        # ip-api.com의 단순 조회 형식
+        url = f"http://ip-api.com/json/{ip}?fields=status,country,regionName,city,isp,message"
+        response = requests.get(url, timeout=5)
+        data = response.json()
+
+        if data.get("status") != "success":
+            return default_data
+
+        return {
+            "country": data.get("country", "알 수 없음"),
+            "region": data.get("regionName", "알 수 없음"),
+            "city": data.get("city", "알 수 없음"),
+            "isp": data.get("isp", "알 수 없음"),
+        }
+    except Exception:
+        return default_data
 
 
 @app.route("/")
 def home():
     ip = get_real_ip()
-    user_agent = request.headers.get("User-Agent", "UNKNOWN")
-    save_log(ip, user_agent)
-    return render_template_string(HTML)
+    info = get_ip_info(ip)
 
-
-@app.route("/logs")
-def logs():
-    # 아주 간단한 관리자 확인용 예시
-    if not os.path.exists(LOG_FILE):
-        return "<pre>아직 로그가 없습니다.</pre>"
-
-    with open(LOG_FILE, "r", encoding="utf-8") as f:
-        content = f.read()
-
-    return f"<pre>{content}</pre>"
+    return render_template_string(
+        HTML,
+        ip=ip,
+        country=info["country"],
+        region=info["region"],
+        city=info["city"],
+        isp=info["isp"],
+    )
 
 
 if __name__ == "__main__":
